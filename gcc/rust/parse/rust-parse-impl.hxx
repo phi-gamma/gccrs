@@ -404,6 +404,12 @@ Parser<ManagedTokenSource>::parse_item (bool called_from_statement)
 	  return Parse::Error::Item::make_malformed ();
 	return RType{std::move (vis_item)};
       }
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return nullptr;
     case SUPER:
     case SELF:
     case CRATE:
@@ -568,6 +574,12 @@ Parser<ManagedTokenSource>::parse_vis_item (AST::AttrVec outer_attrs)
 	case EXTERN_KW:
 	case FN_KW:
 	  return parse_function (std::move (vis), std::move (outer_attrs));
+	case SAFE:
+	  add_error (
+	    Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				    "outside %<unsafe extern%> blocks"));
+	  lexer.skip_token (1); // TODO: is this right thing to do?
+	  return nullptr;
 	default:
 	  add_error (
 	    Error (t->get_locus (),
@@ -613,6 +625,12 @@ Parser<ManagedTokenSource>::parse_vis_item (AST::AttrVec outer_attrs)
 	  lexer.skip_token (1); // TODO: is this right thing to do?
 	  return nullptr;
 	}
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return nullptr;
     case MACRO:
       return parse_decl_macro_def (std::move (vis), std::move (outer_attrs));
     default:
@@ -647,6 +665,12 @@ Parser<ManagedTokenSource>::parse_async_item (AST::Visibility vis,
     case UNSAFE:
     case FN_KW:
       return parse_function (std::move (vis), std::move (outer_attrs));
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return nullptr;
 
     default:
       add_error (
@@ -1560,7 +1584,7 @@ Parser<ManagedTokenSource>::parse_function (AST::Visibility vis,
   location_t locus = lexer.peek_token ()->get_locus ();
   // Get qualifiers for function if they exist
   std::unique_ptr<AST::FunctionQualifiers> qualifiers
-    = parse_function_qualifiers ();
+    = parse_function_qualifiers (is_external);
   if (qualifiers == nullptr)
     return nullptr;
 
@@ -1649,13 +1673,15 @@ Parser<ManagedTokenSource>::parse_function (AST::Visibility vis,
 // Parses function or method qualifiers (i.e. const, unsafe, and extern).
 template <typename ManagedTokenSource>
 std::unique_ptr<AST::FunctionQualifiers>
-Parser<ManagedTokenSource>::parse_function_qualifiers ()
+Parser<ManagedTokenSource>::parse_function_qualifiers (const bool is_external)
 {
   Default default_status = Default::No;
   Async async_status = Async::No;
   Const const_status = Const::No;
   Unsafety unsafe_status = Unsafety::Normal;
   bool has_extern = false;
+  bool has_safe = false;
+  bool has_unsafe = false;
   std::string abi;
 
   // collect all qualifiers before checking the order to allow for a better
@@ -1701,7 +1727,28 @@ Parser<ManagedTokenSource>::parse_function_qualifiers ()
 	  async_status = Async::Yes;
 	  break;
 	case UNSAFE:
-	  unsafe_status = Unsafety::Unsafe;
+	  has_unsafe = true;
+	  break;
+	case SAFE:
+	  if (!is_external)
+	    {
+	      Error error (lexer.peek_token ()->get_locus (),
+			   "the qualifier %<safe%> is only allowed inside an "
+			   "%<unsafe extern%> block");
+	      add_error (std::move (error));
+
+	      return nullptr;
+	    }
+	  if (get_rust_edition () < Edition::E2024)
+	    {
+	      add_error (
+		Error (t->get_locus (),
+		       "%<safe%> is not permitted prior to Rust 2024"));
+	      add_error (
+		Error::Hint (t->get_locus (),
+			     "to use %<safe%>, switch to Rust 2021 or later"));
+	    }
+	  has_safe = true;
 	  break;
 	case EXTERN_KW:
 	  has_extern = true;
@@ -1733,10 +1780,32 @@ done:
 	return 3;
       case UNSAFE:
 	return 4;
-      case EXTERN_KW:
+      case SAFE:
 	return 5;
+      case EXTERN_KW:
+	return 6;
       };
   };
+
+  if (has_safe && has_unsafe)
+    {
+      location_t error_locus
+	= make_location (locus, locus, lexer.peek_token ()->get_locus ());
+      Error error (
+	error_locus,
+	"function qualifiers %<unsafe%> and %<safe%> are mutually exclusive");
+      add_error (std::move (error));
+
+      return nullptr;
+    }
+  else if (has_safe)
+    {
+      unsafe_status = Unsafety::Normal;
+    }
+  else if (has_unsafe)
+    {
+      unsafe_status = Unsafety::Unsafe;
+    }
 
   size_t last_priority = 0;
   for (auto token_id : found_order)
@@ -1762,7 +1831,7 @@ done:
 	  };
 
 	  std::vector<TokenId> expected_order
-	    = {IDENTIFIER, CONST, ASYNC, UNSAFE, EXTERN_KW};
+	    = {IDENTIFIER, CONST, ASYNC, UNSAFE, SAFE, EXTERN_KW};
 
 	  // we only keep the qualifiers actually used in the offending code
 	  std::vector<TokenId>::const_iterator token_id
@@ -4310,6 +4379,12 @@ Parser<ManagedTokenSource>::parse_inherent_impl_item ()
 		return parse_inherent_impl_function_or_method (std::move (vis),
 							       std::move (
 								 outer_attrs));
+	      case SAFE:
+		add_error (Error (t->get_locus (),
+				  "the qualifier %<safe%> is not permitted "
+				  "outside %<unsafe extern%> blocks"));
+		lexer.skip_token (1); // TODO: is this right thing to do?
+		return nullptr;
 	      default:
 		add_error (Error (t->get_locus (),
 				  "unexpected token %qs in some sort of const "
@@ -4335,6 +4410,12 @@ Parser<ManagedTokenSource>::parse_inherent_impl_item ()
       // function or method
       return parse_inherent_impl_function_or_method (
 	AST::Visibility::create_private (), std::move (outer_attrs));
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return nullptr;
     case CONST:
       /* lookahead to resolve production - could be function/method or const
        * item */
@@ -4351,6 +4432,12 @@ Parser<ManagedTokenSource>::parse_inherent_impl_item ()
 	case FN_KW:
 	  return parse_inherent_impl_function_or_method (
 	    AST::Visibility::create_private (), std::move (outer_attrs));
+	case SAFE:
+	  add_error (
+	    Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				    "outside %<unsafe extern%> blocks"));
+	  lexer.skip_token (1); // TODO: is this right thing to do?
+	  return nullptr;
 	default:
 	  add_error (Error (t->get_locus (),
 			    "unexpected token %qs in some sort of const item "
@@ -4518,6 +4605,12 @@ Parser<ManagedTokenSource>::parse_trait_impl_item ()
       // function or method
       return parse_trait_impl_function_or_method (visibility,
 						  std::move (outer_attrs));
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return nullptr;
     case ASYNC:
       return parse_async_item (visibility, std::move (outer_attrs));
     case CONST:
@@ -4535,6 +4628,12 @@ Parser<ManagedTokenSource>::parse_trait_impl_item ()
 	case FN_KW:
 	  return parse_trait_impl_function_or_method (visibility,
 						      std::move (outer_attrs));
+	case SAFE:
+	  add_error (
+	    Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				    "outside %<unsafe extern%> blocks"));
+	  lexer.skip_token (1); // TODO: is this right thing to do?
+	  return nullptr;
 	default:
 	  add_error (Error (
 	    t->get_locus (),
@@ -4926,6 +5025,12 @@ Parser<ManagedTokenSource>::parse_stmt (ParseRestrictions restrictions)
 	}
       break;
     // crappy hack to do union "keyword"
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return nullptr;
     case IDENTIFIER:
       if (t->get_str () == Values::WeakKeywords::UNION
 	  && lexer.peek_token (1)->get_id () == IDENTIFIER)
@@ -5886,6 +5991,12 @@ Parser<ManagedTokenSource>::parse_type (bool save_errors)
     case FN_KW:
       // bare function type (with no for lifetimes)
       return parse_bare_function_type (std::vector<AST::LifetimeParam> ());
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return nullptr;
     case IMPL:
       lexer.skip_token ();
       if (lexer.peek_token ()->get_id () == LIFETIME)
@@ -6197,6 +6308,12 @@ Parser<ManagedTokenSource>::parse_for_prefixed_type ()
     case EXTERN_KW:
     case FN_KW:
       return parse_bare_function_type (std::move (for_lifetimes));
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return nullptr;
     case SCOPE_RESOLUTION:
     case IDENTIFIER:
     case SUPER:
@@ -6723,6 +6840,12 @@ Parser<ManagedTokenSource>::parse_type_no_bounds ()
     case FN_KW:
       // bare function type (with no for lifetimes)
       return parse_bare_function_type (std::vector<AST::LifetimeParam> ());
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return nullptr;
     case IMPL:
       lexer.skip_token ();
       if (lexer.peek_token ()->get_id () == LIFETIME)
@@ -7197,6 +7320,12 @@ Parser<ManagedTokenSource>::parse_stmt_or_expr ()
       /* FIXME: this is either a macro invocation or macro invocation semi.
        * start parsing to determine which one it is. */
       // FIXME: old code there
+    case SAFE:
+      add_error (
+	Error (t->get_locus (), "the qualifier %<safe%> is not permitted "
+				"outside %<unsafe extern%> blocks"));
+      lexer.skip_token (1); // TODO: is this right thing to do?
+      return tl::unexpected<Parse::Error::Node> (Parse::Error::Node::MALFORMED);
 
     // crappy hack to do union "keyword"
     case IDENTIFIER:

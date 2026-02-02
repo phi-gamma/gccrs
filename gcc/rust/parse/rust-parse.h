@@ -364,7 +364,8 @@ private:
   std::unique_ptr<AST::Function> parse_function (AST::Visibility vis,
 						 AST::AttrVec outer_attrs,
 						 bool is_external = false);
-  std::unique_ptr<AST::FunctionQualifiers> parse_function_qualifiers ();
+  std::unique_ptr<AST::FunctionQualifiers>
+  parse_function_qualifiers (bool is_external = false);
   std::vector<std::unique_ptr<AST::GenericParam>>
   parse_generic_params_in_angles ();
   template <typename EndTokenPred>

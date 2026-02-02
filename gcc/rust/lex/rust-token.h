@@ -185,6 +185,7 @@ enum PrimitiveCoreType
   RS_TOKEN_KEYWORD_2015 (PUB, "pub")                                           \
   RS_TOKEN_KEYWORD_2015 (REF, "ref")                                           \
   RS_TOKEN_KEYWORD_2015 (RETURN_KW, "return")                                  \
+  RS_TOKEN_KEYWORD_2015 (SAFE, "safe")                                         \
   RS_TOKEN_KEYWORD_2015 (                                                      \
     SELF_ALIAS, "Self") /* mrustc does not treat this as a reserved word*/     \
   RS_TOKEN_KEYWORD_2015 (SELF, "self")                                         \

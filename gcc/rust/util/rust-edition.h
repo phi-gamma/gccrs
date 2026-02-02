@@ -30,7 +30,8 @@ enum class Edition
 {
   E2015,
   E2018,
-  E2021
+  E2021,
+  E2024
 };
 
 Edition get_rust_edition ();
